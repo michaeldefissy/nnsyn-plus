@@ -16,9 +16,8 @@ from torch import autocast
 import numpy as np
 
 from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDatasetMask
-from nnunetv2.training.nnUNetTrainer.variants.nnsyn.nnUNetTrainer_nnsyn import nnUNetTrainer_nnsyn
-# Why was this here? It creates a circular import
-#from nnunetv2.training.nnUNetTrainer.variants.nnsyn.nnUNetTrainer_nnsyn_tracked import nnUNetTrainer_nnsyn_track
+from nnunetv2.training.nnUNetTrainer.variants.nnsyn.nnUNetTrainer_nnsyn import nnUNetTrainer_nnsyn_track, nnUNetTrainer_nnsyn
+
 
 class nnUNetTrainer_nnsyn_loss_masked(nnUNetTrainer_nnsyn):
     def __init__(

@@ -47,33 +47,10 @@ def process_file(data_path, dataset_path, modality_suffix="_0000"):
         filename = filename + f'{modality_suffix}.mha'
     sitk.WriteImage(curr_img, os.path.join(dataset_path, f'imagesTr/{filename}'))
 
-def process_file_labels(data_path, dataset_path, max_label):
-    """
-    data_path: path to the raw .mha label
-    dataset_path: path to the nnUNet_raw/DatasetXXX folder
-    max_label: the highest integer label index allowed (e.g., 31)
-    """
+def process_file_labels(data_path, dataset_path):
     curr_img = sitk.ReadImage(data_path)
-    nda = sitk.GetArrayFromImage(curr_img)
-    
-    # 1. Force the range to [0, max_label]
-    # Any value below 0 becomes 0 (background)
-    # Any value above max_label becomes 0 (background/ignore) 
-    # Or you can clip to max_label: np.clip(nda, 0, max_label)
-    invalid_mask = (nda < 0) | (nda > max_label)
-    if np.any(invalid_mask):
-        print(f"WARNING: Cleaning {os.path.basename(data_path)}. Found values outside [0, {max_label}]")
-        nda[invalid_mask] = 0 
-    
-    # 2. Ensure it is an integer type (critical for nnU-Net)
-    nda = nda.astype(np.uint8)
-    
-    # 3. Rebuild and Save
-    new_img = sitk.GetImageFromArray(nda)
-    new_img.CopyInformation(curr_img)
-    
     filename = os.path.basename(data_path)
-    sitk.WriteImage(new_img, os.path.join(dataset_path, f'labelsTr/{filename}'))
+    sitk.WriteImage(curr_img, os.path.join(dataset_path, f'labelsTr/{filename}'))
 
 
 def nnsyn_plan_and_preprocess_seg(dataset_id_syn: int,  dataset_id_seg: int,
@@ -84,16 +61,6 @@ def nnsyn_plan_and_preprocess_seg(dataset_id_syn: int,  dataset_id_seg: int,
     list_data_labels = sorted(glob.glob(os.path.join(data_origin_path, 'LABELS','*.mha'), recursive=True))
     print("target ---", len(list_data_ct), list_data_ct[:2])
     print("labels ---", len(list_data_labels), list_data_labels[:2])
-
-    # 1. Determine max_label from the dataset.json
-    json_path = os.path.join(data_origin_path, 'LABELS', 'dataset.json')
-    with open(json_path, 'r') as f:
-        dj = json.load(f)
-    
-    # Count labels: if "labels" is a dict, max index is usually len - 1
-    # Example: {"background": 0, "liver": 1} -> max_label is 1
-    max_label = max([int(v) for v in dj['labels'].values()])
-    print(f"Dynamic Check: Max allowed label is {max_label}")
 
     if dataset_name is None:
         dataset_name = 'SEG_' + os.path.basename(data_origin_path)
@@ -107,7 +74,7 @@ def nnsyn_plan_and_preprocess_seg(dataset_id_syn: int,  dataset_id_seg: int,
         list(tqdm(executor.map(lambda data_path: process_file(data_path, dataset_data_path, "_0000"), list_data_ct), total=len(list_data_ct)))
 
     with ThreadPoolExecutor() as executor:
-        list(tqdm(executor.map(lambda target_path: process_file_labels(target_path, dataset_data_path, max_label), list_data_labels), total=len(list_data_labels)))
+        list(tqdm(executor.map(lambda target_path: process_file_labels(target_path, dataset_data_path), list_data_labels), total=len(list_data_labels)))
 
     
     if os.path.exists(os.path.join(data_origin_path,'LABELS', 'dataset.json')):
