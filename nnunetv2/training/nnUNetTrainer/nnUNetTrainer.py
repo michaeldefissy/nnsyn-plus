@@ -922,6 +922,31 @@ class nnUNetTrainer(object):
         # So autocast will only be active if we have a cuda device.
         with autocast(self.device.type, enabled=True) if self.device.type == 'cuda' else dummy_context():
             output = self.network(data)
+            # --- DEBUG START ---
+            """ import torch
+            print("\n" + "="*30)
+            print(f"DEBUG: nnUNetTrainer.py line 926")
+
+            # Check 'output' (usually a list of tensors for deep supervision)
+            if isinstance(output, (list, tuple)):
+                print(f"Output is a list of length {len(output)}")
+                for i, out in enumerate(output):
+                    print(f"  Output[{i}] shape: {out.shape}")
+            else:
+                print(f"Output shape: {output.shape}")
+
+            # Check 'target' (usually a list of tensors)
+            if isinstance(target, (list, tuple)):
+                print(f"Target is a list of length {len(target)}")
+                for i, tg in enumerate(target):
+                    # Unique values help identify if a label index is out of bounds
+                    unique_vals = torch.unique(tg)
+                    print(f"  Target[{i}] shape: {tg.shape}, Unique values: {unique_vals.tolist()}")
+            else:
+                print(f"Target shape: {target.shape}, Unique values: {torch.unique(target).tolist()}")
+            print("="*30 + "\n") """
+            # --- DEBUG END ---
+
             # del data
             l = self.loss(output, target)
 
