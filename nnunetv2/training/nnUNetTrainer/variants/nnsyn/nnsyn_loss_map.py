@@ -26,34 +26,160 @@ from nnunetv2.utilities.dataset_name_id_conversion import maybe_convert_to_datas
 # https://github.com/Project-MONAI/GenerativeModels/blob/main/generative/losses/perceptual.py
 
 
+class GradientDifferenceLoss(nn.Module):
+    def __init__(self, alpha=1):
+        super(GradientDifferenceLoss, self).__init__()
+        self.alpha = alpha
+
+    def forward(self, pred, target, mask=None):
+        def get_gradients(img):
+            dz = torch.abs(img[:, :, 1:, :, :] - img[:, :, :-1, :, :])
+            dy = torch.abs(img[:, :, :, 1:, :] - img[:, :, :, :-1, :])
+            dx = torch.abs(img[:, :, :, :, 1:] - img[:, :, :, :, :-1])
+            return dz, dy, dx
+
+        dz_pred, dy_pred, dx_pred = get_gradients(pred)
+        dz_target, dy_target, dx_target = get_gradients(target)
+
+        if mask is not None:
+            mask_z = mask[:, :, 1:, :, :] * mask[:, :, :-1, :, :]
+            mask_y = mask[:, :, :, 1:, :] * mask[:, :, :, :-1, :]
+            mask_x = mask[:, :, :, :, 1:] * mask[:, :, :, :, :-1]
+            loss_z = torch.abs(dz_pred - dz_target) ** self.alpha
+            loss_y = torch.abs(dy_pred - dy_target) ** self.alpha
+            loss_x = torch.abs(dx_pred - dx_target) ** self.alpha
+            return (loss_z * mask_z).mean() + (loss_y * mask_y).mean() + (loss_x * mask_x).mean()
+
+        return (torch.abs(dz_pred - dz_target) ** self.alpha).mean() + \
+               (torch.abs(dy_pred - dy_target) ** self.alpha).mean() + \
+               (torch.abs(dx_pred - dx_target) ** self.alpha).mean()
+
+class FocalFrequencyLoss(nn.Module):
+    def __init__(self, loss_weight=1.0, alpha=1.0):
+        super(FocalFrequencyLoss, self).__init__()
+        self.loss_weight = loss_weight
+        self.alpha = alpha
+
+    def forward(self, pred, target, mask=None):
+        if mask is not None:
+            pred = pred * mask
+            target = target * mask
+        
+        # Spatial dimensions are usually the last 3 for 3D tensors (B, C, D, H, W)
+        pred_fft = torch.fft.fftn(pred, dim=(-3, -2, -1), norm='ortho')
+        target_fft = torch.fft.fftn(target, dim=(-3, -2, -1), norm='ortho')
+
+        pred_amp = torch.abs(pred_fft)
+        target_amp = torch.abs(target_fft)
+        
+        diff = torch.abs(pred_amp - target_amp) ** 2
+        return self.loss_weight * diff.mean()
+
+class ReLoBRaLo:
+    """
+    Relative Loss Balancing with Random Lookback.
+    Dynamically adjusts weights based on how much a loss has dropped 
+    compared to the previous step (short-term) or initial step (long-term).
+    """
+    def __init__(self, num_losses, initial_weights=None, alpha=0.99, temperature=1.0, rho=0.5):
+        self.num_losses = num_losses
+        self.alpha = alpha  # Smoothing factor for history
+        self.temperature = temperature # Softmax temperature
+        self.rho = rho # Probability of looking back at previous step vs initial
+        
+        # If no initial weights provided, start equal
+        if initial_weights is None:
+            self.current_weights = np.ones(num_losses)
+        else:
+            self.current_weights = np.array(initial_weights)
+            
+        self.initial_losses = None
+        self.prev_losses = None
+        self.loss_history = [] 
+
+    def update(self, current_losses: list):
+        # Convert tensor losses to numpy/float
+        current_loss_vals = np.array([l.item() if isinstance(l, torch.Tensor) else l for l in current_losses])
+        
+        # Initialization step
+        if self.initial_losses is None:
+            self.initial_losses = current_loss_vals
+            self.prev_losses = current_loss_vals
+            return torch.tensor(self.current_weights, dtype=torch.float32, device='cuda')
+
+        # ReLoBRaLo Logic
+        # Bernoulli trial: Choose lookback horizon (Previous vs Initial)
+        is_prev = np.random.rand() < self.rho
+        
+        denom = self.prev_losses if is_prev else self.initial_losses
+        
+        # Avoid division by zero
+        denom = np.maximum(denom, 1e-8)
+        
+        # Calculate Relative Loss metric (T)
+        # Higher T = "Lagging behind" (Loss hasn't dropped much) => Needs higher weight
+        T = current_loss_vals / denom
+        
+        # Normalize/Softmax to get new weights
+        # We want the weights to sum to num_losses (or maintain scale)
+        # Using a tempered softmax for stability
+        exp_T = np.exp(T / self.temperature)
+        new_weights = self.num_losses * (exp_T / np.sum(exp_T))
+        
+        # Apply smoothing (EMA) to prevent oscillation
+        self.current_weights = self.alpha * self.current_weights + (1 - self.alpha) * new_weights
+        
+        # Update history
+        self.prev_losses = current_loss_vals
+        
+        return torch.tensor(self.current_weights, dtype=torch.float32, device='cuda')
+
 class MaskedAnatomicalPerceptionLoss(nn.Module):
-    def __init__(self, dataset_name_seg: int, image_loss_weight: float = 0.5, perception_masked=False):
+    def __init__(self, dataset_name_seg: int, 
+                 image_loss_weight: float = 0.5, 
+                 perception_masked=False,
+                 gdl_weight: float = 0.0,
+                 ffl_weight: float = 0.0,
+                 dynamic_balancing: bool = False): # Toggle switch
         """
-        Initializes the SynSegLoss module.
-        region can be "AB", "HN", or "TH" to specify the anatomical region.
+        Initializes the loss module with optional Dynamic Balancing.
         """
         super(MaskedAnatomicalPerceptionLoss, self).__init__()
 
-        # load the trained segmentor model
+        # Load Segmentor
         self.seg_model, self.seg_model_info = self._load_trained_segmentor(dataset_name_seg)
         self.seg_model.eval()
         for param in self.seg_model.parameters(): 
             param.requires_grad = False
         self.seg_model.to(device='cuda', dtype=torch.float16)
 
-        # specify the segmentation loss
+        # Standard Losses
         self.L1 = nn.L1Loss()
         self.perception_masked = perception_masked
-
-        # specify the image similarity loss
         self.image_loss = myMaskedMSE()
-        self.image_loss_weight = image_loss_weight  # You can adjust this weight as needed
+        
+        # Configuration
+        self.dynamic_balancing = dynamic_balancing
+        
+        # Initialize Weights (Static defaults)
+        # Order: [Perception, MSE, GDL, FFL]
+        self.static_weights = [1.0 - image_loss_weight, image_loss_weight, gdl_weight, ffl_weight]
+        
+        # Initialize Sub-losses
+        self.gdl = GradientDifferenceLoss()
+        self.ffl = FocalFrequencyLoss()
+        
+        # Initialize Dynamic Balancer if enabled
+        if self.dynamic_balancing:
+            # We have 4 potential loss components
+            self.relobralo = ReLoBRaLo(num_losses=4, initial_weights=self.static_weights)
 
-        # logging current losses 
+        # Logging placeholders
+        self.cur_weights = self.static_weights # To log the current weights used
         self.cur_seg_loss = 0.0
         self.cur_img_loss = 0.0
-    
-
+        self.cur_gdl_loss = 0.0
+        self.cur_ffl_loss = 0.0
 
     def _load_trained_segmentor(self, dataset_name_seg: Union[int, str]):
         # segmentor_training_output_dir = {
@@ -114,33 +240,62 @@ class MaskedAnatomicalPerceptionLoss(nn.Module):
         return network, network_info
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        # 1. Perception Loss
         if self.perception_masked:
-            # apply the mask to the output and target tensors, and set the outside region to -1
-            output = output * mask + (1 - mask) * -1
-            target = target * mask + (1 - mask) * -1
-        # compute the segmentation loss
-        pred_outputs = self.seg_model(output)
-        pred_gt_outputs = self.seg_model(target)
+            out_seg_input = output * mask + (1 - mask) * -1
+            tgt_seg_input = target * mask + (1 - mask) * -1
+        else:
+            out_seg_input = output
+            tgt_seg_input = target
+
+        pred_outputs = self.seg_model(out_seg_input)
+        pred_gt_outputs = self.seg_model(tgt_seg_input)
 
         perception_loss = 0
-        layer_losses = []
         for i in range(self.seg_model_info['n_stages']):
-            layer_loss = self.L1(self._normalize_tensor(pred_outputs[i]), self._normalize_tensor(pred_gt_outputs[i].detach()))
-            perception_loss += layer_loss
-            layer_losses.append((i, layer_loss.item()))
+            perception_loss += self.L1(self._normalize_tensor(pred_outputs[i]), 
+                                     self._normalize_tensor(pred_gt_outputs[i].detach()))
 
-        
-        # compute the image similarity loss
+        # 2. Image Loss (MSE)
         img_loss = self.image_loss(output, target, mask=mask)
 
-        # log the current losses
+        # 3. GDL
+        gdl_loss = self.gdl(output, target, mask)
+
+        # 4. FFL
+        ffl_loss = self.ffl(output, target, mask)
+
+        # --- Weighting Strategy ---
+        if self.dynamic_balancing:
+            # Update and get new weights [Perception, MSE, GDL, FFL]
+            losses_list = [perception_loss, img_loss, gdl_loss, ffl_loss]
+            weights = self.relobralo.update(losses_list)
+            
+            # Store for logging
+            self.cur_weights = weights.detach().cpu().numpy().tolist()
+            
+            total_loss = (weights[0] * perception_loss) + \
+                         (weights[1] * img_loss) + \
+                         (weights[2] * gdl_loss) + \
+                         (weights[3] * ffl_loss)
+        else:
+            # Static Weighting
+            w = self.static_weights
+            total_loss = (w[0] * perception_loss) + \
+                         (w[1] * img_loss) + \
+                         (w[2] * gdl_loss) + \
+                         (w[3] * ffl_loss)
+
+        # Logging
         self.cur_seg_loss = perception_loss.detach().cpu().numpy()
         self.cur_img_loss = img_loss.detach().cpu().numpy()
+        self.cur_gdl_loss = gdl_loss.detach().cpu().numpy()
+        self.cur_ffl_loss = ffl_loss.detach().cpu().numpy()
+        
+        return total_loss
 
-        return perception_loss * (1 - self.image_loss_weight) + img_loss * self.image_loss_weight
-
-    def _normalize_tensor(self, in_feat,eps=1e-10):
-        norm_factor = torch.sqrt(torch.sum(in_feat**2,dim=1,keepdim=True))
+    def _normalize_tensor(self, in_feat, eps=1e-10):
+        norm_factor = torch.sqrt(torch.sum(in_feat**2, dim=1, keepdim=True))
         return in_feat/(norm_factor+eps)
     
 
