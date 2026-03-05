@@ -21,15 +21,15 @@ source /datasets/work/hb-iphd-sct/source/nnsynenv/bin/activate
 cd /datasets/work/hb-iphd-sct/source/nnsyn
 
 nnsyn_plan_and_preprocess \
-    -d 140 \
+    -d 960 \
     -c 3d_fullres \
     -pl nnUNetPlannerResEncL \
     -p nnUNetResEncUNetLPlans \
     --preprocessing_input MR \
     --preprocessing_target CT 
 
-nnsyn_plan_and_preprocess_seg \
-    -d 140 \
-    -dseg 141 \
-    -c 3d_fullres \
-    -p nnUNetResEncUNetLPlans
+#nnsyn_plan_and_preprocess_seg \
+#    -d 960 \
+#    -dseg 961 \
+#    -c 3d_fullres \
+#    -p nnUNetResEncUNetLPlans

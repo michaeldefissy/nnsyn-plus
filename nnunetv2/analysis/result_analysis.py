@@ -122,8 +122,14 @@ class ValidationResults():
         img_gt = sitk.ReadImage(gt_path, sitk.sitkFloat32)
         img_mask = sitk.ReadImage(mask_path, sitk.sitkUInt8)
 
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(img_gt)
+        resampler.SetInterpolator(sitk.sitkLinear)
+        resampler.SetDefaultPixelValue(-1000.0) # Set air as default background
+        img_pred_aligned = resampler.Execute(img_pred)
+
         # compute image scores
-        array_pred = sitk.GetArrayFromImage(img_pred)
+        array_pred = sitk.GetArrayFromImage(img_pred_aligned)
         array_gt = sitk.GetArrayFromImage(img_gt)
         array_mask = sitk.GetArrayFromImage(img_mask)
         res = self.image_metrics.score_patient(array_gt, array_pred, array_mask)
@@ -390,29 +396,17 @@ def load_image_file_directly(*, location, return_orientation=False, set_orientat
 
 
 if __name__ == '__main__':
-
-    # pred_path = "/datasets/work/hb-synthrad2023/work/synthrad2025/bw_workplace/data/nnunet_struct/results/Dataset206_synthrad2025_task1_MR_mednextL/nnUNetTrainerV2_MedNeXt_L_kernel3__nnUNetPlans__3d_fullres/fold_0/validation"
-    # pred_path_revert_norm = pred_path + "_revert_norm"
-
-    # raw_data_path = f"/datasets/work/hb-synthrad2023/work/synthrad2025/bw_workplace/data/nnunet_struct/preprocessed/Dataset206_synthrad2025_task1_MR_mednextL"
-    # gt_path = os.path.join(raw_data_path, "gt_segmentations")
-    # mask_path = os.path.join(raw_data_path, "masks")
-    # results, df = compute_folder_metrics(pred_path_revert_norm, gt_path, mask_path)
-    # print("mean mae:", results['mae']['mean'])
-    # print("mean psnr:", results['psnr']['mean'])
-    # print("mean ms_ssim:", results['ms_ssim']['mean'])
-
-    nnUNet_preprocessed = "/datasets/work/hb-synthrad2023/work/synthrad2025/bw_workplace/data/nnunet_struct/preprocessed"
-    nnUNet_raw = "/datasets/work/hb-synthrad2023/work/synthrad2025/bw_workplace/data/nnunet_struct/raw"
-    nnUNet_results = "/datasets/work/hb-synthrad2023/work/synthrad2025/bw_workplace/data/nnunet_struct/results"
+    nnUNet_preprocessed = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_preprocessed"
+    nnUNet_raw = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_raw"
+    nnUNet_results = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_results/"
     
-    dataset_name = "Dataset540_synthrad2025_task2_CBCT_AB_pre_v2r_stitched_masked_both"
-    pred_path_revert_norm = os.path.join(nnUNet_results, dataset_name, "nnUNetTrainerMRCT_loss_masked_perception_masked__nnUNetResEncUNetLPlans__3d_fullres/fold_0/validation_revert_norm")
+    dataset_name = "Dataset140_synthrad2025_task1_mri2ct_AB"
+    seg_dataset_name = "Dataset141_SEG_synthrad2025_task1_mri2ct_AB"
+    pred_path_revert_norm = os.path.join(nnUNet_results, dataset_name, "nnUNetTrainer_nnsyn_loss_map__nnUNetResEncUNetLPlans__3d_fullres/fold_0_relobralo/validation_revert_norm")
 
-    gt_path = os.path.join(nnUNet_preprocessed, dataset_name, "gt_target")
-    mask_path = os.path.join(nnUNet_preprocessed, dataset_name, "masks")
-    gt_segmentation_path = os.path.join(nnUNet_preprocessed, dataset_name, "gt_target_segmentation_ts")
-    # gt_segmentation_path = None
+    gt_path = os.path.join(nnUNet_raw, seg_dataset_name, "imagesTr")
+    mask_path = os.path.join(nnUNet_raw, dataset_name, "labelsTr")
+    gt_segmentation_path = os.path.join(nnUNet_raw, seg_dataset_name, "labelsTr")
     src_path = os.path.join(nnUNet_raw, dataset_name, 'imagesTr')
 
     ts = ValidationResults(pred_path_revert_norm, gt_path, mask_path, src_path, gt_segmentation_path=gt_segmentation_path)
