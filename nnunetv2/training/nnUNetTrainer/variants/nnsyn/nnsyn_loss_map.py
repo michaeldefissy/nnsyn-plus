@@ -27,32 +27,33 @@ from nnunetv2.utilities.dataset_name_id_conversion import maybe_convert_to_datas
 
 
 class GradientDifferenceLoss(nn.Module):
-    def __init__(self, alpha=1):
+    def __init__(self, alpha=2):
         super(GradientDifferenceLoss, self).__init__()
         self.alpha = alpha
 
     def forward(self, pred, target, mask=None):
-        def get_gradients(img):
-            dz = torch.abs(img[:, :, 1:, :, :] - img[:, :, :-1, :, :])
-            dy = torch.abs(img[:, :, :, 1:, :] - img[:, :, :, :-1, :])
-            dx = torch.abs(img[:, :, :, :, 1:] - img[:, :, :, :, :-1])
-            return dz, dy, dx
+        # 1. Use torch.diff to get directional gradients
+        dz_pred, dy_pred, dx_pred = pred.diff(dim=-3), pred.diff(dim=-2), pred.diff(dim=-1)
+        dz_target, dy_target, dx_target = target.diff(dim=-3), target.diff(dim=-2), target.diff(dim=-1)
 
-        dz_pred, dy_pred, dx_pred = get_gradients(pred)
-        dz_target, dy_target, dx_target = get_gradients(target)
+        # 2. Compute the difference between directional gradients
+        loss_z = torch.abs(dz_pred - dz_target) ** self.alpha
+        loss_y = torch.abs(dy_pred - dy_target) ** self.alpha
+        loss_x = torch.abs(dx_pred - dx_target) ** self.alpha
 
         if mask is not None:
+            # Shift masks to match the .diff() dimensionality reduction
             mask_z = mask[:, :, 1:, :, :] * mask[:, :, :-1, :, :]
             mask_y = mask[:, :, :, 1:, :] * mask[:, :, :, :-1, :]
             mask_x = mask[:, :, :, :, 1:] * mask[:, :, :, :, :-1]
-            loss_z = torch.abs(dz_pred - dz_target) ** self.alpha
-            loss_y = torch.abs(dy_pred - dy_target) ** self.alpha
-            loss_x = torch.abs(dx_pred - dx_target) ** self.alpha
-            return (loss_z * mask_z).mean() + (loss_y * mask_y).mean() + (loss_x * mask_x).mean()
+            
+            loss_z = loss_z * mask_z
+            loss_y = loss_y * mask_y
+            loss_x = loss_x * mask_x
 
-        return (torch.abs(dz_pred - dz_target) ** self.alpha).mean() + \
-               (torch.abs(dy_pred - dy_target) ** self.alpha).mean() + \
-               (torch.abs(dx_pred - dx_target) ** self.alpha).mean()
+            return (loss_z.sum() + loss_y.sum() + loss_x.sum()) / pred.numel()
+
+        return (loss_z.sum() + loss_y.sum() + loss_x.sum()) / pred.numel()
 
 class FocalFrequencyLoss(nn.Module):
     def __init__(self, loss_weight=1.0, alpha=1.0):
@@ -61,19 +62,32 @@ class FocalFrequencyLoss(nn.Module):
         self.alpha = alpha
 
     def forward(self, pred, target, mask=None):
-        if mask is not None:
-            pred = pred * mask
-            target = target * mask
         
-        # Spatial dimensions are usually the last 3 for 3D tensors (B, C, D, H, W)
+        # 1. 3D Fast Fourier Transform (Complex values)
         pred_fft = torch.fft.fftn(pred, dim=(-3, -2, -1), norm='ortho')
         target_fft = torch.fft.fftn(target, dim=(-3, -2, -1), norm='ortho')
 
-        pred_amp = torch.abs(pred_fft)
-        target_amp = torch.abs(target_fft)
+        # 2. Complex difference (preserves both Amplitude and Phase)
+        diff = pred_fft - target_fft
+        freq_distance = torch.abs(diff) ** 2 # Squared Euclidean distance
+
+        # 3. THE FOCAL MECHANISM: Dynamic Spectrum Weighting
+        weight_matrix = torch.abs(diff) ** self.alpha
+
+        # Match official logic: Normalize weight matrix by the maximum distance 
+        # We use amax to find the max across the 3D spatial dimensions (D, H, W)
+        max_vals = weight_matrix.amax(dim=(-3, -2, -1), keepdim=True)
+        max_vals = torch.clamp(max_vals, min=1e-8) # Safe division
         
-        diff = torch.abs(pred_amp - target_amp) ** 2
-        return self.loss_weight * diff.mean()
+        weight_matrix = weight_matrix / max_vals
+
+        # Detach the matrix from the computation graph (we only optimize the distance)
+        weight_matrix = torch.clamp(weight_matrix, min=0.0, max=1.0).detach()
+
+        # 4. Apply the focal weights (Hadamard product)
+        loss = weight_matrix * freq_distance
+        
+        return self.loss_weight * loss.mean()
 
 class ReLoBRaLo:
     """
@@ -107,33 +121,26 @@ class ReLoBRaLo:
             self.prev_losses = current_loss_vals
             return torch.tensor(self.current_weights, dtype=torch.float32, device='cuda')
 
-        # ReLoBRaLo Logic
-        # Bernoulli trial: Choose lookback horizon (Previous vs Initial)
-        is_prev = np.random.rand() < self.rho
-        
-        denom = self.prev_losses if is_prev else self.initial_losses
-        
-        # Avoid division by zero
-        denom = np.maximum(denom, 1e-8)
-        
-        # Calculate Relative Loss metric (T)
-        # Higher T = "Lagging behind" (Loss hasn't dropped much) => Needs higher weight
-        T = current_loss_vals / denom
-        
-        # Normalize/Softmax to get new weights
-        # We want the weights to sum to num_losses (or maintain scale)
-        # Using a tempered softmax for stability
-        exp_T = np.exp(T / self.temperature)
-        new_weights = self.num_losses * (exp_T / np.sum(exp_T))
-        
-        # Apply smoothing (EMA) to prevent oscillation
-        self.current_weights = self.alpha * self.current_weights + (1 - self.alpha) * new_weights
+        # 1. Short-term lookback
+        T_stat = current_loss_vals / (self.prev_losses * self.temperature + 1e-12)
+        exp_T_stat = np.exp(T_stat - np.max(T_stat)) # safe softmax
+        lambs_hat = self.num_losses * (exp_T_stat / np.sum(exp_T_stat))
+
+        # 2. Initial lookback
+        T_init = current_loss_vals / (self.initial_losses * self.temperature + 1e-12)
+        exp_T_init = np.exp(T_init - np.max(T_init)) # safe softmax
+        lambs0_hat = self.num_losses * (exp_T_init / np.sum(exp_T_init))
+
+        # 3. Deterministic combination
+        self.current_weights = (self.rho * self.alpha * self.current_weights) + \
+                               ((1 - self.rho) * self.alpha * lambs0_hat) + \
+                               ((1 - self.alpha) * lambs_hat)
         
         # Update history
         self.prev_losses = current_loss_vals
         
         return torch.tensor(self.current_weights, dtype=torch.float32, device='cuda')
-
+    
 class MaskedAnatomicalPerceptionLoss(nn.Module):
     def __init__(self, dataset_name_seg: int, 
                  image_loss_weight: float = 0.5, 

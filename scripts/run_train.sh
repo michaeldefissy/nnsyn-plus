@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=OD-214219
-#SBATCH --job-name=nnsyn_train
+#SBATCH --job-name=nnsyn_train_static
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -16,7 +16,9 @@ export nnsyn_origin_dataset="/datasets/work/hb-iphd-sct/source/datasets/synthrad
 export nnUNet_raw="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_raw"
 export nnUNet_preprocessed="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_preprocessed"
 export nnUNet_results="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_results"
-export USE_DYNAMIC_BALANCING="True"
+export USE_DYNAMIC_BALANCING="False"
+
+module load cuda
 
 source /datasets/work/hb-iphd-sct/source/nnsynenv/bin/activate
 cd /datasets/work/hb-iphd-sct/source/nnsyn
