@@ -54,5 +54,5 @@ if __name__ == "__main__":
     ct_plan_path = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_preprocessed/Dataset140_synthrad2025_task1_mri2ct_AB/gt_plan/nnUNetResEncUNetLPlans.json"
     ct_mean, ct_std = get_ct_normalisation_values(ct_plan_path)
     mask_path = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_raw/Dataset140_synthrad2025_task1_mri2ct_AB/labelsTr"
-    pred_path = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_results/Dataset140_synthrad2025_task1_mri2ct_AB/nnUNetTrainer_nnsyn_loss_map__nnUNetResEncUNetLPlans__3d_fullres/fold_0_relobralo/validation"
+    pred_path = "/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_results/Dataset140_synthrad2025_task1_mri2ct_AB/nnUNetTrainer_nnsyn_loss_map__nnUNetResEncUNetLPlans__3d_fullres/fold_0_relobralo_2/validation"
     revert_normalisation(pred_path, ct_mean, ct_std, save_path=pred_path + "_revert_norm", mask_path=mask_path)

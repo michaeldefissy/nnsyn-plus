@@ -16,7 +16,7 @@ export nnsyn_origin_dataset="/datasets/work/hb-iphd-sct/source/datasets/synthrad
 export nnUNet_raw="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_raw"
 export nnUNet_preprocessed="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_preprocessed"
 export nnUNet_results="/datasets/work/hb-iphd-sct/source/datasets/synthrad2025_AB/nnUNet_results"
-export USE_DYNAMIC_BALANCING="False"
+export USE_DYNAMIC_BALANCING="True"
 
 module load cuda
 

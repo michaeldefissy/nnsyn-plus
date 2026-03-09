@@ -62,10 +62,13 @@ class FocalFrequencyLoss(nn.Module):
         self.alpha = alpha
 
     def forward(self, pred, target, mask=None):
+        # --- THE FIX: Cast to float32 to bypass cuFFT half-precision restrictions ---
+        pred_fp32 = pred.to(torch.float32)
+        target_fp32 = target.to(torch.float32)
         
         # 1. 3D Fast Fourier Transform (Complex values)
-        pred_fft = torch.fft.fftn(pred, dim=(-3, -2, -1), norm='ortho')
-        target_fft = torch.fft.fftn(target, dim=(-3, -2, -1), norm='ortho')
+        pred_fft = torch.fft.fftn(pred_fp32, dim=(-3, -2, -1), norm='ortho')
+        target_fft = torch.fft.fftn(target_fp32, dim=(-3, -2, -1), norm='ortho')
 
         # 2. Complex difference (preserves both Amplitude and Phase)
         diff = pred_fft - target_fft
@@ -74,7 +77,7 @@ class FocalFrequencyLoss(nn.Module):
         # 3. THE FOCAL MECHANISM: Dynamic Spectrum Weighting
         weight_matrix = torch.abs(diff) ** self.alpha
 
-        # Match official logic: Normalize weight matrix by the maximum distance 
+        # Normalize weight matrix by the maximum distance 
         # We use amax to find the max across the 3D spatial dimensions (D, H, W)
         max_vals = weight_matrix.amax(dim=(-3, -2, -1), keepdim=True)
         max_vals = torch.clamp(max_vals, min=1e-8) # Safe division
